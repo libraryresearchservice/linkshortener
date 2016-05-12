@@ -1,0 +1,22 @@
+{
+    "name": "lrs/linkshortener",
+    "description": "Link shortening service.",
+    "authors": [
+        {
+            "name": "lrs",
+            "email": "lrs@lrs.org"
+        }
+    ],
+    "require": {
+        "php": ">=5.3.0"
+    },
+    "autoload": {
+        "classmap": [
+            "src"
+        ],
+        "psr-0": {
+            "Lrs\\Linkshortener\\": "src/"
+        }
+    },
+    "minimum-stability": "dev"
+}
