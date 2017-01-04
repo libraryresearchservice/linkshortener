@@ -33,6 +33,7 @@ class LinkShortener {
 				'table_name'	=> 'urls',
 				'token'			=> 'token',
 				'url'			=> 'url',
+				'shortened'		=> 'shortened',
 			),
 		);
 		$this->pdo = $pdo;
@@ -47,31 +48,28 @@ class LinkShortener {
 		}
 		return $this->baseURL;
 	}
-	/**
-	 *	Get a link from MySQL by searching for the URL or ID
-	 */
-	public function getLink($link, $by = 'url', $return = 'rows') {
+	public function find($link, $by = 'shortened', $return = 'row') {
 		$sql = sprintf(
-			"SELECT `%s`, `%s` FROM `%s` WHERE `%s` = ?",
+			"SELECT `%s`, `%s`, `%s` FROM `%s` WHERE `%s` = ?",
 				$this->options['db']['id'],
 				$this->options['db']['url'],
+				$this->options['db']['shortened'],
 				$this->options['db']['table_name'],
-				$by == 'url' ? $this->options['db']['url'] : $this->options['db']['id']
+				$by == 'shortened' ? $this->options['db']['shortened'] : $this->options['db']['url']
 		);
 		$stmt = $this->pdo->prepare($sql);
 		$stmt->execute(array($link));
 		if ( $return == 'count' ) {
 			return $stmt->rowCount();
+		} else if ( $return == 'url' ) {
+			$results = $stmt->fetch(PDO::FETCH_OBJ);
+			if ( $results ) {
+				return $results->url;
+			}
+			return false;
 		} else {
 			return $stmt->fetch(PDO::FETCH_OBJ);
 		}
-	}
-	/**
-	 *	Get a link by converting a hash to ID
-	 */
-	public function getLinkByToken($hash) {
-		$id = $this->hasher->unhash($hash);
-		return $this->getLink($id, 'id');
 	}
 	/**
 	 *	Track the number of times a link is accessed
@@ -88,17 +86,6 @@ class LinkShortener {
 		return $stmt->execute(array($id));
 	}
 	/**
-	 *	Convert a hash to ID then get the related link
-	 */
-	public function lengthen($hash) {
-		$link = $this->getLinkByToken($hash);
-		if ( $link ) {
-			$this->incrementReferralCounter($link->id);
-			return $link->url;
-		}
-		return false;
-	}
-	/**
 	 *	Set or get options
 	 */
 	public function options($options = false) {
@@ -113,8 +100,8 @@ class LinkShortener {
 	 */
 	public function shorten($linkToShorten) {
 		$linkToShorten = trim($linkToShorten);
-		if ( $linkToShorten != '' ) {
-			$exists = $this->getLink($linkToShorten);
+		if ( $linkToShorten != '' && !is_numeric($linkToShorten) ) {
+			$exists = $this->find($linkToShorten, 'url');
 			if ( !$exists ) {
 				$sql = sprintf(
 					"INSERT INTO `%s` (`%s`, `%s`) VALUES (?, ?)",
@@ -128,10 +115,83 @@ class LinkShortener {
 					bin2hex(openssl_random_pseudo_bytes(16))
 				));
 				$id = $this->pdo->lastInsertId('id');
+				$hash = $this->updateByNextAvailableHash($this->hasher->hash($id), $id);
+				if ( $hash ) {
+					return $this->url($hash);
+				}
 			} else {
+				if ( $exists->shortened != '' ) {
+					return $this->url($exists->shortened);
+				}
 				$id = $exists->id;
+				return $this->url($this->hasher->hash($exists->id));
 			}
-			return $this->url($this->hasher->hash($id));
+		}
+		return false;
+	}
+	public function shortenByCustom($linkToShorten, $shortened) {
+		$linkToShorten = trim($linkToShorten);
+		if ( $linkToShorten != '' ) {
+			$exists = $this->find($linkToShorten, 'url');
+			if ( !$exists ) {
+				$exists = $this->find($shortened);
+				if ( $exists ) {
+					return 'Custom shortener already exists';
+				}
+				$sql = sprintf(
+					"INSERT INTO `%s` (`%s`, `%s`, `%s`) VALUES (?, ?, ?)",
+						$this->options['db']['table_name'],
+						$this->options['db']['url'],
+						$this->options['db']['shortened'],
+						$this->options['db']['token']
+				);
+				$stmt = $this->pdo->prepare($sql);
+				$stmt->execute(array(
+					$linkToShorten,
+					$shortened,
+					bin2hex(openssl_random_pseudo_bytes(16))
+				));
+			} else {
+				$shortened = $exists->shortened;
+			}
+			return $this->url($shortened);
+		}
+		return false;
+	}
+	/**
+	 *	If auto-hashing by auto-incremented ID,
+	 *	find the next available hash by first 
+	 *	checking the auto-generated hash, and then
+	 *	checking [auto-generated hash]+[a-z].
+	 */
+	public function updateByNextAvailableHash($hash, $id) {
+		$array = range('a', 'z');
+		array_unshift($array, $hash);
+		$i = 1;
+		foreach ( $array as $alpha ) {
+			$possible = (!isset($possible) ? '' : $hash.'+').$alpha;
+			$this->pdo->exec(sprintf('LOCK TABLES `%s` WRITE', $this->options['db']['table_name']));
+			$sql = sprintf(
+				'SELECT `%s` FROM `%s` WHERE `%s` = ?',
+					$this->options['db']['id'],
+					$this->options['db']['table_name'],
+					$this->options['db']['shortened']	
+			);
+			$stmt = $this->pdo->prepare($sql);
+			$stmt->execute(array($possible));
+			if ( $stmt->rowCount() == 0 ) {
+				$sql = sprintf(
+					"UPDATE `%s` SET `%s` = ? WHERE `%s` = %d",
+						$this->options['db']['table_name'],
+						$this->options['db']['shortened'],
+						$this->options['db']['id'],
+						$id
+				);
+				$stmt = $this->pdo->prepare($sql);
+				$stmt->execute(array($possible));
+				$this->pdo->exec('UNLOCK TABLES');
+				return $possible;
+			}
 		}
 		return false;
 	}
